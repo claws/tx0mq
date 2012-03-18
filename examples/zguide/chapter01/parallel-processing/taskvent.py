@@ -2,43 +2,74 @@
 # Binds PUSH socket to tcp://localhost:5557
 # Sends batch of tasks to workers via that socket
 #
-# Author: Lev Givon <lev(at)columbia(dot)edu>
 
-import zmq
 import random
+import sys
 import time
+from twisted.internet import reactor
+try:
+    import tx0mq
+except ImportError, ex:
+    import os
+    package_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[0]))))))
+    sys.path.append(package_dir)
+from tx0mq import ZmqEndpoint, ZmqEndpointType, ZmqFactory, ZmqPushConnection
 
-context = zmq.Context()
 
-# Socket to send messages on
-sender = context.socket(zmq.PUSH)
-sender.bind("tcp://*:5557")
+if __name__ == "__main__":
 
-# Socket with direct access to the sink: used to syncronize start of batch
-sink = context.socket(zmq.PUSH)
-sink.connect("tcp://localhost:5558")
+    # Initialize random number generator
+    random.seed()
+    
+    # Define how many tasks to run
+    task_count = 100
 
-print "Press Enter when the workers are ready: "
-_ = raw_input()
-print "Sending tasks to workers..."
+    print "Press Enter when the workers are ready: "
+    _ = raw_input()
+    print "Connecting to to workers and sink..."
 
-# The first message is "0" and signals start of batch
-sink.send('0')
+    def onWorkerChannelConnected(ventilator, factory):
+        print "ventilator connected to worker push channel"
 
-# Initialize random number generator
-random.seed()
+        # Socket with direct access to the sink: used to syncronize start of batch
+        endpoint = ZmqEndpoint(ZmqEndpointType.connect, "tcp://localhost:5558")
+        sink = ZmqPushConnection(endpoint)
+        deferred = sink.connect(factory)
+        deferred.addCallback(onSinkChannelConnected, ventilator)
+        
+    def onSinkChannelConnected(sink, ventilator):
+        print "ventilator connected to sink push channel"
+        # The first message is "0" and signals start of batch
+        print "sending batch start message"
+        sink.send("start:%s" % task_count)
+        reactor.callLater(1.0, vent, ventilator)
+   
+    def vent(ventilator):
+        # Send tasks
+        total_msec = 0
+        for task_number in range(task_count):
+        
+            # Random workload msecs
+            workload = random.randint(1, 100)
+            total_msec += workload
+            ventilator.send(str(workload))
 
-# Send 100 tasks
-total_msec = 0
-for task_nbr in range(100):
+        print "Total expected cost: %s msec" % total_msec
+        print "ventilator done"
+        
+    factory = ZmqFactory()
 
-    # Random workload from 1 to 100 msecs
-    workload = random.randint(1, 100)
-    total_msec += workload
+    # Socket to send messages to workers on
+    endpoint = ZmqEndpoint(ZmqEndpointType.bind, "tcp://*:5557")
+    ventilator = ZmqPushConnection(endpoint)
+    deferred = ventilator.listen(factory)
+    deferred.addCallback(onWorkerChannelConnected, factory)
 
-    sender.send(str(workload))
+    reactor.run()
 
-print "Total expected cost: %s msec" % total_msec
 
-# Give 0MQ time to deliver
-time.sleep(1)
+
+
+
+
+

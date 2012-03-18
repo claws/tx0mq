@@ -8,3 +8,4 @@ build
 *.egg-info
 nohup.out
 *.sw[po]
+_trial_temp

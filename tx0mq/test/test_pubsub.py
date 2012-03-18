@@ -3,23 +3,23 @@ Tests for L{tx0mq.pubsub}.
 """
 from twisted.trial import unittest
 
-from tx0mq.connection import ZmqEndpoint, ZmqEndpointType
-from tx0mq.factory import ZmqFactory
-from tx0mq.pubsub import ZmqPubConnection, ZmqSubConnection
-from tx0mq.test import _wait
+from twisted.internet import reactor, defer
+
+from tx0mq import ZmqEndpoint, ZmqEndpointType, ZmqFactory, ZmqPubConnection, ZmqSubConnection
 
 
 class ZmqTestSubConnection(ZmqSubConnection):
-    def gotMessage(self, message, tag):
+
+    def messageReceived(self, message, topic):
         if not hasattr(self, 'messages'):
             self.messages = []
 
-        self.messages.append([tag, message])
+        self.messages.append([topic, message])
 
 
-class ZmqConnectionTestCase(unittest.TestCase):
+class ZmqPubSubTestCase(unittest.TestCase):
     """
-    Test case for L{zmq.twisted.connection.Connection}.
+    Test case for L{tx0mq.pubsub}
     """
 
     def setUp(self):
@@ -31,63 +31,123 @@ class ZmqConnectionTestCase(unittest.TestCase):
         self.factory.shutdown()
 
     def test_send_recv(self):
-        r = ZmqTestSubConnection(
-            self.factory, ZmqEndpoint(ZmqEndpointType.bind, "ipc://test-sock"))
-        s = ZmqPubConnection(
-            self.factory, ZmqEndpoint(ZmqEndpointType.connect,
-            "ipc://test-sock"))
+        """ Check sending and receiving """
 
-        r.subscribe('tag')
-        s.publish('xyz', 'different-tag')
-        s.publish('abcd', 'tag1')
-        s.publish('efgh', 'tag2')
+        def onListen(p, s, d):
+            ds = s.connect(self.factory)
+            ds.addCallback(onConnect, p, d)
+        
+        def onConnect(s, p, d):
+            s.subscribe('tag')
+            reactor.callLater(0.2, performTest, s, p, d)
 
-        def check(ignore):
-            result = getattr(r, 'messages', [])
-            expected = [['tag1', 'abcd'], ['tag2', 'efgh']]
+        def performTest(s, p ,d):
+            p.publish('xyz', 'different-tag')
+            p.publish('abcd', 'tag1')
+            p.publish('efgh', 'tag2')
+            reactor.callLater(0.2, check, s, d)
+            
+        def check(s, d):
+            result = getattr(s, 'messages', [])
+            expected = [['tag1', ['abcd']], ['tag2', ['efgh']]]
             self.failUnlessEqual(
                 result, expected, "Message should have been received")
+            d.callback(True) 
+        
+        s = ZmqTestSubConnection(ZmqEndpoint(ZmqEndpointType.connect, "ipc://test-sock"))
+        p = ZmqPubConnection(ZmqEndpoint(ZmqEndpointType.bind, "ipc://test-sock"))
 
-        return _wait(0.01).addCallback(check)
+        d = defer.Deferred()
 
-    def test_send_recv_pgm(self):
-        r = ZmqTestSubConnection(self.factory, ZmqEndpoint(
-            ZmqEndpointType.bind, "epgm://127.0.0.1;239.192.1.1:5556"))
-        s = ZmqPubConnection(self.factory, ZmqEndpoint(
-            ZmqEndpointType.connect, "epgm://127.0.0.1;239.192.1.1:5556"))
+        ds = p.listen(self.factory)
+        ds.addCallback(onListen, s, d)
 
-        r.subscribe('tag')
-        s.publish('xyz', 'different-tag')
-        s.publish('abcd', 'tag1')
-
-        def check(ignore):
-            result = getattr(r, 'messages', [])
-            expected = [['tag1', 'abcd']]
-            self.failUnlessEqual(
-                result, expected, "Message should have been received")
-
-        return _wait(0.2).addCallback(check)
+        return d
+#
+# PGM is not enabled in my 0MQ. OpenPGM is currently broken on
+# OS X 10.7. It will be fixed in the OpenPGM 5.2 release.
+#
+#    def test_send_recv_pgm(self):
+#        """ Test send and receive using multicast """
+#        
+#        def onListen(p, s, d):
+#            print "publisher listening"
+#            ds = s.connect(self.factory)
+#            ds.addCallback(onConnect, p, d)
+#        
+#        def onConnect(s, p, d):
+#            print "subscriber connected"
+#            s.subscribe('tag')
+#            reactor.callLater(0.2, perform_test, s, p, d)
+#
+#        def perform_test(s, p, d):
+#            print "publishing messages"
+#            p.publish('xyz', 'different-tag')
+#            p.publish('abcd', 'tag1')
+#            reactor.callLater(0.2, check, s, d)
+#            
+#        def check(s, d):
+#            print "checking results"
+#            result = getattr(s, 'messages', [])
+#            print "result: %s" % result
+#            expected = [['tag1', ['abcd']]]
+#            print "expected: %s" % expected
+#            self.failUnlessEqual(
+#                result, expected, "Message should have been received")
+#            d.callback(True) 
+#
+#        s = ZmqTestSubConnection(
+#            ZmqEndpoint(ZmqEndpointType.connect, "epgm://127.0.0.1;239.192.1.1:5556"))
+#        p = ZmqPubConnection(
+#            ZmqEndpoint(ZmqEndpointType.bind, "epgm://127.0.0.1;239.192.1.1:5556"))
+#
+#        d = defer.Deferred()
+#
+#        dp = p.listen(self.factory)
+#        dp.addCallback(onListen, s, d)
+#
+#        return d
 
     def test_send_recv_multiple_endpoints(self):
-        r = ZmqTestSubConnection(
-            self.factory,
-            ZmqEndpoint(ZmqEndpointType.bind, "tcp://127.0.0.1:5556"),
-            ZmqEndpoint(ZmqEndpointType.bind, "inproc://endpoint"))
-        s1 = ZmqPubConnection(
-            self.factory,
-            ZmqEndpoint(ZmqEndpointType.connect, "tcp://127.0.0.1:5556"))
-        s2 = ZmqPubConnection(
-            self.factory,
-            ZmqEndpoint(ZmqEndpointType.connect, "inproc://endpoint"))
+        """ Check send and receive using multiple endpoint """
+        
+        def onP1Listen(p1, p2, s, d):
+            dp2 = p2.listen(self.factory)
+            dp2.addCallback(onP2Listen, p1, s, d)
 
-        r.subscribe('')
-        s1.publish('111', 'tag1')
-        s2.publish('222', 'tag2')
+        def onP2Listen(p2, p1, s, d):
+            ds = s.connect(self.factory)
+            ds.addCallback(onConnect, p1, p2, d)
+        
+        def onConnect(s, p1, p2, d):
+            s.subscribe('')
+            reactor.callLater(0.2, perform_test, s, p1, p2, d)
 
-        def check(ignore):
-            result = getattr(r, 'messages', [])
-            expected = [['tag2', '222'], ['tag1', '111']]
+
+        def perform_test(s, p1, p2, d):
+            p1.publish('111', 'tag1')
+            p2.publish('222', 'tag2')
+            reactor.callLater(0.2, check, s, d)
+            
+        def check(s, d):
+            result = getattr(s, 'messages', [])
+            expected = [['tag2', ['222']], ['tag1', ['111']]]
             self.failUnlessEqual(
                 result, expected, "Message should have been received")
+            d.callback(True) 
 
-        return _wait(0.2).addCallback(check)
+        s = ZmqTestSubConnection(
+            ZmqEndpoint(ZmqEndpointType.connect, "tcp://127.0.0.1:5556"),
+            ZmqEndpoint(ZmqEndpointType.connect, "inproc://endpoint"))
+        p1 = ZmqPubConnection(
+            ZmqEndpoint(ZmqEndpointType.bind, "tcp://127.0.0.1:5556"))
+        p2 = ZmqPubConnection(
+            ZmqEndpoint(ZmqEndpointType.bind, "inproc://endpoint"))
+
+        d = defer.Deferred()
+
+        ds = p1.listen(self.factory)
+        ds.addCallback(onP1Listen, p2, s, d)
+
+        return d
+

@@ -37,6 +37,7 @@ class ZmqFactory(object):
         """
         self.connections = set()
         self.context = Context(self.ioThreads)
+        self.registerForShutdown()
 
     def __repr__(self):
         return "ZmqFactory()"
@@ -61,4 +62,4 @@ class ZmqFactory(object):
         Register factory to be automatically shut down
         on reactor shutdown.
         """
-        reactor.addSystemEventTrigger('during', 'shutdown', self.shutdown)
+        reactor.addSystemEventTrigger('before', 'shutdown', self.shutdown)

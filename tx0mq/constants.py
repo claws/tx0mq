@@ -1,4 +1,4 @@
 """
 Provided as a convenience.
 """
-from zmq.constants import *
+from zmq.core.constants import *

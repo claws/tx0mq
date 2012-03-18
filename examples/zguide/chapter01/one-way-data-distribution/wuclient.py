@@ -5,25 +5,51 @@
 #
 
 import sys
-import zmq
+from twisted.internet import reactor
+from optparse import OptionParser
+try:
+    import tx0mq
+except ImportError, ex:
+    import os
+    package_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[0]))))))
+    sys.path.append(package_dir)
+from tx0mq import ZmqEndpoint, ZmqEndpointType, ZmqFactory, ZmqSubConnection
 
-#  Socket to talk to server
-context = zmq.Context()
-socket = context.socket(zmq.SUB)
+parser = OptionParser("")
+parser.add_option("-z", "--zipcode", dest="zipcode", default="10001", help="Zipcode. default is NYC, 10001")
 
-print "Collecting updates from weather server..."
-socket.connect ("tcp://localhost:5556")
 
-# Subscribe to zipcode, default is NYC, 10001
-filter = sys.argv[1] if len(sys.argv) > 1 else "10001"
-socket.setsockopt(zmq.SUBSCRIBE, filter)
+class MySubscriber(ZmqSubConnection):
 
-# Process 5 updates
-total_temp = 0
-for update_nbr in range (5):
-    string = socket.recv()
-    zipcode, temperature, relhumidity = string.split()
-    total_temp += int(temperature)
+    def messageReceived(self, message, zipcode):
+        # this example only ever receives single-part messages
+        message = message[0]
+        print "Received message: (%s) %s" % (zipcode, message)
+        temperature, relhumidity = message.split()
+        self.total_temp += int(temperature)
+        self.update_count += 1
+        if self.update_count == self.updates_to_process:
+            print "Average temperature for zipcode '%s' was %dF" % (zipcode, self.total_temp / self.updates_to_process)
+            reactor.callLater(1.0, reactor.stop)
 
-print "Average temperature for zipcode '%s' was %dF" % (           
-      filter, total_temp / update_nbr)
+
+if __name__ == '__main__':
+
+    (options, args) = parser.parse_args()
+
+    number_of_updates = 5
+
+    def onConnect(subscriber):
+        print "subscriber connected, subscribing for zipcode: %s" % options.zipcode
+        # Subscribe to zipcode, default is NYC, 10001
+        subscriber.subscribe(options.zipcode)
+        subscriber.update_count = 0
+        subscriber.total_temp = 0
+        subscriber.updates_to_process = number_of_updates
+
+    endpoint = ZmqEndpoint(ZmqEndpointType.connect, "tcp://localhost:5556")
+    subscriber = MySubscriber(endpoint)
+    deferred = subscriber.listen(ZmqFactory())
+    deferred.addCallback(onConnect)
+    reactor.run()
+

@@ -1,8 +1,8 @@
 """
 ZeroMQ PUB-SUB wrappers.
 """
-from zmq.core import constants
-
+import types
+from tx0mq import constants
 from tx0mq.connection import ZmqConnection
 
 
@@ -12,7 +12,7 @@ class ZmqPubConnection(ZmqConnection):
     """
     socketType = constants.PUB
 
-    def publish(self, message, tag=''):
+    def publish(self, message, topic=''):
         """
         Broadcast L{message} with specified L{tag}.
 
@@ -21,7 +21,11 @@ class ZmqPubConnection(ZmqConnection):
         @param tag: message tag
         @type tag: C{str}
         """
-        self.send(tag + '\0' + message)
+        if type(message) != types.ListType:
+            message = [message]
+        if topic:
+            message = [topic] + message
+        self.send(message)
 
 
 class ZmqSubConnection(ZmqConnection):
@@ -48,20 +52,19 @@ class ZmqSubConnection(ZmqConnection):
         """
         self.socket.setsockopt(constants.UNSUBSCRIBE, tag)
 
-    def messageReceived(self, message):
+    def _messageReceived(self, message):
         """
         Called on incoming message from ZeroMQ.
+        Pub/Sub messages are always multi-part messages, with 
+        the first part representing the message topic.
 
         @param message: message data
         """
-        if len(message) == 2:
-            # compatibility receiving of tag as first part
-            # of multi-part message
-            self.gotMessage(message[1], message[0])
-        else:
-            self.gotMessage(*reversed(message[0].split('\0', 1)))
+        topic = message[0]
+        message = message[1:]
+        self.messageReceived(message, topic)
 
-    def gotMessage(self, message, tag):
+    def messageReceived(self, message, topic):
         """
         Called on incoming message recevied by subscriber
 
