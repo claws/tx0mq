@@ -1,20 +1,25 @@
+
 """
 ZeroMQ connection.
 """
-import types
+
 from collections import deque, namedtuple
-
-from tx0mq import constants
-from zmq.core import error
-from zmq.core.socket import Socket
-
-from zope.interface import implements
+import logging
+import random
 
 from twisted.internet import defer
 from twisted.internet.interfaces import IFileDescriptor, IReadDescriptor
 from twisted.python import log
-
+from tx0mq import constants
 from tx0mq import exceptions, util
+import types
+from zmq.core import error
+from zmq.core.socket import Socket
+from zmq.core.version import zmq_version_info
+from zope.interface import implements
+
+
+ZMQ3 = zmq_version_info()[0] == 3
 
 
 class ZmqEndpointType(object):
@@ -55,6 +60,8 @@ class ZmqConnection(object):
     @type isConnected: C{lbool}
     @ivar isListening: True if the listen() method called without error
     @type isListening: C{lbool}
+    @iprop isEstablished: True if isListening or isConnected are True
+    @type isEstablished: C{lbool}
     """
     implements(IReadDescriptor, IFileDescriptor)
 
@@ -90,10 +97,19 @@ class ZmqConnection(object):
         socket = Socket(factory.context, self.socketType)
         self.fd = socket.getsockopt(constants.FD)
         socket.setsockopt(constants.LINGER, factory.lingerPeriod)
-        socket.setsockopt(
-            constants.MCAST_LOOP, int(self.allowLoopbackMulticast))
+
+        if not ZMQ3:
+            socket.setsockopt(
+                constants.MCAST_LOOP, int(self.allowLoopbackMulticast))
+
         socket.setsockopt(constants.RATE, self.multicastRate)
-        socket.setsockopt(constants.HWM, self.highWaterMark)
+
+        if not ZMQ3:
+            socket.setsockopt(constants.HWM, self.highWaterMark)
+        else:
+            socket.setsockopt(constants.SNDHWM, self.highWaterMark)
+            socket.setsockopt(constants.RCVHWM, self.highWaterMark)
+
         if self.identity is not None:
             socket.setsockopt(constants.IDENTITY, self.identity)
         return socket
@@ -101,6 +117,9 @@ class ZmqConnection(object):
     def _connectOrBind(self, factory):
         """
         Connect and/or bind socket to endpoints.
+
+        Any wildcard endpoints in self.endpoints get replaced by
+        the actual endpoint used.
         """
         self.socket = self._createSocket(factory)
         for endpoint in self.endpoints:
@@ -108,13 +127,50 @@ class ZmqConnection(object):
                 self.socket.connect(endpoint.address)
                 self.isConnected = True
             elif endpoint.type == ZmqEndpointType.bind:
-                self.socket.bind(endpoint.address)
+                # handle wildcard port
+                if endpoint.address.endswith("*"):
+                    max_tries = 100
+                    min_port = 49152
+                    max_port = 65536
+                    for i in range(max_tries):
+                        try:
+                            port = random.randrange(min_port, max_port)
+                            candidate_address = "%s:%s" % (endpoint.address.split(":*")[0], port)
+                            self.socket.bind(candidate_address)
+
+                            # replace the wildcard endpoint with the actual endpoint
+                            eps = list(self.endpoints)
+                            index = eps.index(endpoint)
+                            self.endpoints = eps
+                            eps[index] = ZmqEndpoint(endpoint.type, candidate_address)
+                            self.endpoints = tuple(eps)
+                            break
+
+                        except error.ZMQError, ex:
+                            if not ex.errno == constants.EADDRINUSE:
+                                raise
+                            else:
+                                logging.info("%s addr in use, trying another..." % candidate_address)
+
+                else:
+                    self.socket.bind(endpoint.address)
                 self.isListening = True
             else:
                 assert False, "Unknown endpoint type %r" % endpoint
         factory.connections.add(self)
         factory.reactor.addReader(self)
         self.factory = factory
+
+    @property
+    def isEstablished(self):
+        """
+        Return True if any of this connections endpoints are
+        established. Multiple endpoints can be specified of
+        differnet types (bind and connect). This property can
+        returning True if either isListening or isConnected
+        are True.
+        """
+        return self.isListening or self.isConnected
 
     def connect(self, factory):
         """
@@ -143,6 +199,7 @@ class ZmqConnection(object):
         try:
             self._connectOrBind(factory)
         except Exception, err:
+            logging.exception(err)
             msg = util.buildErrorMessage(err)
             return defer.fail(exceptions.ListenError(msg))
         else:
@@ -212,7 +269,7 @@ class ZmqConnection(object):
         Set options on the socket.
 
         @param opts: Socket options, eg. {tx0mq.constants.LINGER : 0}
-        @type opts: C{dict} 
+        @type opts: C{dict}
         """
         for opt, value in opts.items():
             print "attempting to set socket option %s to %s" % (opt, value)
@@ -300,7 +357,7 @@ class ZmqConnection(object):
 
         @param message: message data
         """
-        # To cater for multi-part messages and to present a consistent 
+        # To cater for multi-part messages and to present a consistent
         # interface to messageReceived a list is always passed, even if
         # there is only one message part.
         if type(message) != types.ListType:

@@ -3,7 +3,7 @@ import sys
 
 display_name = "tx0mq"
 library_name = "tx0mq"
-version = "0.5.0"
+version = "0.5.1"
 author = "Duncan McGreggor"
 author_email = "oubiwann@gmail.com"
 license = "BSD"

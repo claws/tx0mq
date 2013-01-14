@@ -1,8 +1,9 @@
+
+
 import logging
 import logging.config
-import zmq
-import multiprocessing
-from zmq.eventloop import *
+from tx0mq ZmqEndPoint, ZmqEndpointType, ZmqPubConnection
+
 
 def sub_logger(port):
     ctx = zmq.Context()
@@ -16,30 +17,55 @@ def sub_logger(port):
         if name == 'log':
             msg[0] = int(msg[0])
         getattr(logging, name)(*msg)
-        
-    
+
+
+
+endpoint = 'tcp://127.0.0.1:5555'
 
 class ZLogger(object):
-    
-    def __init__(self,fname=None):
+
+    def __init__(self, fname=None):
         if fname is not None:
             logging.config.fileConfig(fname)
-        self.ctx = zmq.Context()
-        self.pub = self.ctx.socket(zmq.PUB)
-        self.port = self.pub.bind_to_random_port('tcp://127.0.0.1')
-        self.sub_proc = multiprocessing.Process(target=sub_logger, args=(self.port,))
-        self.sub_proc.start()
-        pass
-    
+        self.pub = None
+
+    def start(self, endpoint):
+        self.factory = ZmqFactory()
+        self.pub = ZmqPubConnection(ZmqEndoint(ZmqEndpointType.bind, endpoint))
+        d = self.pub.connect(self.factory)
+        d.addCallback(self._onListen)
+        return d
+
+    def _onListen(self, pub):
+        print "Log publisher connected"
+
     def log(self, level, msg):
-        self.pub.send_multipart(['log', str(level), msg])
-    
+        self.pub.publish(['log', str(level), msg])
+
     def warn(self, msg):
-        self.pub.send_multipart(['warn', msg])
-    
+        self.pub.publish(['warn', msg])
+
     def error(self, msg):
-        self.pub.send_multipart(['error', msg])
-    
+        self.pub.publish(['error', msg])
 
+if __name__ == '__main__':
 
+    (options, args) = parser.parse_args()
+    endpoint = 'tcp://127.0.0.1:5555'
 
+    def publish(publisher):
+        data = str(time.time())
+        print "publishing (%s) %s ..." % (options.topic, data)
+        publisher.publish(data, topic=options.topic)
+        reactor.callLater(1, publish, publisher)
+
+    def onListen(publisher):
+        print "Publisher connected"
+        publisher.setSocketOptions({constants.LINGER:0})
+        publish(publisher)
+
+    endpoint = ZmqEndpoint(ZmqEndpointType.bind, options.endpoint)
+    publisher = ZmqPubConnection(endpoint)
+    deferred = publisher.listen(ZmqFactory())
+    deferred.addCallback(onListen)
+    reactor.run()
